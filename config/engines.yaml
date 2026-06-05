@@ -1,0 +1,10 @@
+engines:
+  - id: chatgpt
+    enabled: true
+    model: "gpt-4o-search-preview"
+  - id: perplexity
+    enabled: true
+    model: "sonar"
+  - id: gemini
+    enabled: true
+    model: "gemini-2.5-flash"

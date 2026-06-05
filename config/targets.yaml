@@ -1,0 +1,14 @@
+brand_name: "○○酒造"
+aliases:
+  - "マルマル酒造"
+  - "Maru Maru Sake Brewery"
+products:
+  - name: "△△ 純米大吟醸"
+    aliases:
+      - "△△"
+      - "Maru Junmai Daiginjo"
+  - name: "□□ 特別純米"
+    aliases:
+      - "□□"
+prefecture: "新潟県"
+website: "https://example-sake.jp"

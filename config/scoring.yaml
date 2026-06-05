@@ -1,0 +1,15 @@
+appearance:
+  hit: 60
+  mention: 20
+  miss: 0
+
+rank_bonus:
+  1: 25
+  2: 18
+  3: 12
+  4: 6
+  default: 3  # 5位以下
+
+self_cited_bonus: 15
+
+max_score: 100
