@@ -1,9 +1,12 @@
-"""Step 2: Extract structured fields from raw AI responses (rule-based)."""
+"""Step 2: Extract structured fields from raw AI responses (rule-based + LLM)."""
 import json
+import logging
 import re
 import unicodedata
 from pathlib import Path
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 MALL_DOMAINS = {"rakuten.co.jp", "amazon.co.jp", "yahoo.co.jp", "qoo10.jp", "mercari.com"}
 
@@ -101,6 +104,91 @@ def _extract_competitors_basic(
     return result[:10]
 
 
+# ── LLM secondary judgment ─────────────────────────────────────────────────────
+
+_LLM_SYSTEM = (
+    "あなたは日本酒の推薦テキストを分析するアシスタントです。"
+    "必ずJSON形式のみで返答してください。説明文は不要です。"
+)
+
+
+def _get_anthropic_client():
+    import anthropic
+    return anthropic.Anthropic()
+
+
+def _relevant_snippet(text: str, norm_names: list[str], window: int = 3) -> str:
+    """Return lines containing the target name with ±window lines of context."""
+    lines = text.splitlines()
+    hit_indices = {
+        i for i, line in enumerate(lines)
+        if any(n in _normalize(line) for n in norm_names)
+    }
+    collected = set()
+    for i in hit_indices:
+        for j in range(max(0, i - window), min(len(lines), i + window + 1)):
+            collected.add(j)
+    return "\n".join(lines[i] for i in sorted(collected))
+
+
+def _llm_classify_appearance(text: str, target_names: list[str], norm_names: list[str]) -> str:
+    """Ask Claude whether the target is a recommendation (hit) or mere mention."""
+    snippet = _relevant_snippet(text, norm_names)
+    if not snippet:
+        return "mention"
+
+    prompt = (
+        f"以下のテキストにおいて「{'・'.join(target_names[:3])}」は"
+        "「推薦（hit）」として登場していますか、それとも「単なる言及（mention）」ですか？\n\n"
+        f"テキスト:\n{snippet}\n\n"
+        '{"classification": "hit" または "mention", "reason": "理由"} の形式で返してください。'
+    )
+
+    try:
+        client = _get_anthropic_client()
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=128,
+            system=[{"type": "text", "text": _LLM_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        data = json.loads(raw)
+        result = data.get("classification", "mention")
+        return result if result in ("hit", "mention") else "mention"
+    except Exception as exc:
+        logger.warning("LLM appearance classification failed: %s", exc)
+        return "mention"
+
+
+def _llm_extract_competitors(text: str, norm_names: list[str]) -> list[str]:
+    """Ask Claude to extract all sake brand/brewery names from the response."""
+    prompt = (
+        "以下のテキストに登場する日本酒の銘柄名・蔵名をすべて抽出してください。\n"
+        "重複なしで最大10件、JSON配列（文字列のみ）で返してください。\n\n"
+        f"テキスト:\n{text[:2000]}\n\n"
+        '例: ["獺祭", "久保田", "朝日酒造"]'
+    )
+
+    try:
+        client = _get_anthropic_client()
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            system=[{"type": "text", "text": _LLM_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text.strip()
+        names = json.loads(raw)
+        if not isinstance(names, list):
+            return []
+        # 自社名を除外
+        return [n for n in names if not any(nn in _normalize(str(n)) for nn in norm_names)][:10]
+    except Exception as exc:
+        logger.warning("LLM competitor extraction failed: %s", exc)
+        return []
+
+
 # ── citations ──────────────────────────────────────────────────────────────────
 
 def _self_domain(target: dict) -> str:
@@ -126,24 +214,36 @@ def _classify_url(url: str, self_dom: str) -> str:
 
 # ── main entry point ───────────────────────────────────────────────────────────
 
-def extract(text: str, citations: list[str], target: dict) -> dict:
+def extract(text: str, citations: list[str], target: dict, use_llm: bool = False) -> dict:
     """Extract structured fields from one AI response.
+
+    Args:
+        use_llm: If True, refine appearance classification and competitor extraction via Claude.
 
     Returns:
         appearance: "hit" | "mention" | "miss"
         rank: int | None
-        competitors: list of raw text snippets (refined by LLM in step 4)
+        competitors: list of brand/brewery names
         self_cited: bool
         citation_domains: list of unique domains
         classified_citations: list of {url, type}
     """
-    norm_names = [_normalize(n) for n in _collect_target_names(target)]
+    target_names = _collect_target_names(target)
+    norm_names = [_normalize(n) for n in target_names]
     norm_text = _normalize(text)
     list_items = _find_list_items(text)
 
     appearance = _detect_appearance(text, norm_text, norm_names, list_items)
     rank = _detect_rank(norm_names, list_items) if appearance != "miss" else None
-    competitors = _extract_competitors_basic(list_items, norm_names)
+
+    if use_llm:
+        # 二次判定: hit/mention が曖昧なケースをLLMで確定
+        if appearance in ("hit", "mention"):
+            appearance = _llm_classify_appearance(text, target_names, norm_names)
+        # 競合抽出: LLMで全文から銘柄名を抽出
+        competitors = _llm_extract_competitors(text, norm_names)
+    else:
+        competitors = _extract_competitors_basic(list_items, norm_names)
 
     self_dom = _self_domain(target)
     classified = [{"url": u, "type": _classify_url(u, self_dom)} for u in citations]

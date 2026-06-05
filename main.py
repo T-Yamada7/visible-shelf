@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-api", action="store_true", help="Re-run extraction/scoring from existing raw/ files")
     p.add_argument("--engines", help="Comma-separated engine IDs to run (e.g. perplexity,chatgpt)")
     p.add_argument("--dry-run", action="store_true", help="Print query list without calling APIs")
+    p.add_argument("--use-llm", action="store_true", help="Enable LLM secondary judgment for appearance/competitors")
     return p.parse_args()
 
 
@@ -67,7 +68,7 @@ def main() -> None:
 
     extracted = []
     for r in results:
-        fields = extract(r["text"], r["citations"], target)
+        fields = extract(r["text"], r["citations"], target, use_llm=args.use_llm)
         extracted.append({**r, **fields})
 
     for row in extracted:
