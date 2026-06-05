@@ -39,6 +39,11 @@ def main() -> None:
 
     engine_filter = [e.strip() for e in args.engines.split(",")] if args.engines else None
 
+    import yaml
+
+    with open(target_path, encoding="utf-8") as f:
+        target = yaml.safe_load(f)
+
     if not args.skip_api:
         from src.runner import run
         results = run(
@@ -54,7 +59,27 @@ def main() -> None:
             return
         print(f"\nAPI calls done. {len(results)} responses collected.")
     else:
-        print("--skip-api: loading from raw/ (extractor/scorer not yet implemented)")
+        from src.extractor import load_from_raw
+        results = load_from_raw(raw_dir, queries_path)
+        print(f"Loaded {len(results)} raw responses from {raw_dir}")
+
+    from src.extractor import extract
+
+    extracted = []
+    for r in results:
+        fields = extract(r["text"], r["citations"], target)
+        extracted.append({**r, **fields})
+
+    for row in extracted:
+        app = row["appearance"]
+        rank = row["rank"]
+        rank_str = f"#{rank}" if rank else "-"
+        print(
+            f"  [{row['engine']}] {row['query_id']} tier{row['tier']}"
+            f" → {app} {rank_str}"
+            f" | cited={row['self_cited']}"
+            f" | competitors={len(row['competitors'])}"
+        )
 
 
 if __name__ == "__main__":
